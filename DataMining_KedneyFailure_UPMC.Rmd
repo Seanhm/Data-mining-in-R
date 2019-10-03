@@ -1,0 +1,132 @@
+---
+title: "RLab_HaominXie"
+author: "HaominXie&YunshuLiang"
+date: "2/28/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+Rlab_data <- read.csv("~/Desktop/Data Mining/DataFiles/INFSCI_2160_R_LAB_DATASET.csv")
+library(dplyr)
+library(pROC)
+library(rsample)
+library(xgboost)
+library(caret)
+```
+```{r}
+#Transform the column with more than 30% null values into 0
+for(i in c(1:ncol(Rlab_data))){
+  if(sum(is.na(Rlab_data[i]))/nrow(Rlab_data)>0.3){
+    #print(names(Rlab_data[,i]))
+    cat("\n",sum(is.na(Rlab_data[i]))/nrow(Rlab_data))
+    Rlab_data[,i]=0
+    cat("\nThe colomns set to 0: ", i)
+    }
+}
+#print(Rlab_data)
+```
+```{r}
+ncol(Rlab_data)
+i <- 1
+rownum <- nrow(Rlab_data)
+while (i <= ncol(Rlab_data)) {
+  if (sum(is.na(Rlab_data[, c(i)]))/rownum > 0.3) Rlab_data <- Rlab_data[, -i] else i <- i+1
+}
+ncol(Rlab_data)
+```
+
+```{r}
+set.seed(150)
+train_test_split <- initial_split(Rlab_data, prop = 0.70)
+train_tbl <- training(train_test_split)
+test_tbl  <- testing(train_test_split)
+
+#Create a cross-val dataset for training with XGBoost
+train_split_xgcv <- initial_split(train_tbl, prop = 0.90)
+xgcv_train <- training(train_split_xgcv)
+xgcv_val <- testing(train_split_xgcv)
+
+#Check distribution of target in training and test sets
+table(train_tbl$ESRD_FLG_COMP)
+table(Rlab_data$ESRD_FLG_COMP)
+```
+```{r}
+dtrain <- xgb.DMatrix(data = as.matrix(train_tbl[,2:115]),label = train_tbl$ESRD_FLG_COMP)
+dtest <- xgb.DMatrix(data = as.matrix(test_tbl[, 2:115]), label = test_tbl$ESRD_FLG_COMP)
+
+cvtrain <- xgb.DMatrix(data = as.matrix(xgcv_train[,2:115]),label = xgcv_train$ESRD_FLG_COMP)
+cvval <- xgb.DMatrix(data = as.matrix(xgcv_val[,2:115]),label = xgcv_val$ESRD_FLG_COMP)
+
+#Begin xgb cross validation for true model
+xgb_params <- list(booster = "gbtree", objective = "binary:logistic", eta = 0.35, max_depth = 2, early_stopping_rounds = 10 ,scale_pos_weight = 38)
+
+xgboost_cv <- xgb.cv(params = xgb_params, data = dtrain, nfold = 4, metrics = "auc", print_every_n = 1, maximize = TRUE, nrounds = 1000, early_stopping_rounds = 10)
+xgboost_cv
+```
+```{r}
+xgb1 <- xgb.train(params = xgb_params, data = cvtrain, nrounds = 1000, watchlist = list(val=cvval#,train=cvtrain 
+),
+print_every_n = 1, maximize = TRUE , eval_metric = "auc", early_stopping_rounds = 10)
+```
+```{r}
+test_w_preds <- test_tbl %>%
+  mutate(xgb_probs = predict(xgb1, dtest),
+         xgb_resp = ifelse(xgb_probs <= 0.4615362#0.27763837 more accurate for the nagetive predicted value
+                           , 0, 1))
+CM<-table(test_w_preds$ESRD_FLG_COMP, test_w_preds$xgb_resp)
+#print(test_w_preds$xgb_probs)
+confusionMatrix(CM)
+```
+
+```{r}
+xgbrocplot <- plot(roc(test_w_preds$ESRD_FLG_COMP, test_w_preds$xgb_probs))
+xgbroc <- roc(test_w_preds$ESRD_FLG_COMP, test_w_preds$xgb_probs)
+xgbauc <- auc(xgbroc)
+xgbauc
+ci.auc(xgbroc)
+```
+```{r}
+#Youden's J
+coords(xgbroc, x="best", input="threshold", best.method="youden")
+```
+```{r}
+#Risk categories:
+test_w_preds <- test_w_preds %>%
+  mutate(categories = ifelse(xgb_probs <= 0.099, "Low",
+                           ifelse(xgb_probs > 0.099 & xgb_probs <= 0.199, "Intermediate",
+                                  ifelse(xgb_probs > 0.199, "High","Highest"))))
+#print(test_w_preds$categories)
+```
+
+
+```{r}
+set.seed(1)
+probs_quantiles <- quantile(test_w_preds$xgb_probs, probs = seq(0, 1, 0.20), na.rm = FALSE, names = TRUE, type = 9)
+probs_quantiles
+```
+```{r}
+test_w_preds <- test_w_preds %>%
+  mutate(prob_bins = ifelse(xgb_probs <= 0.03747317, "Bin 1",
+                           ifelse(xgb_probs > 0.03747317 & xgb_probs <= 0.06900373, "Bin 2",
+                                  ifelse(xgb_probs > 0.06900373 & xgb_probs <= 0.12620716 , "Bin 3",
+                                         ifelse(xgb_probs > 0.12620716 & xgb_probs <= 0.27763837, "Bin 4",
+                                                ifelse(xgb_probs > 0.27763837, "Bin 5", "Max Bin"))))))
+
+prob_bins <- test_w_preds$prob_bins
+
+table(test_tbl$ESRD_FLG_COMP, test_w_preds$xgb_resp, prob_bins)
+```
+```{r}
+hist(test_w_preds$xgb_probs)
+```
+
+
+
+
+
+
+
+
+
+
